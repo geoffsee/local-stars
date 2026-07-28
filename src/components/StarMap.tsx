@@ -1,11 +1,16 @@
-import { useMemo, useRef, useState, useCallback, Suspense } from "react";
-import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
 import {
-  OrbitControls,
-  Html,
-  Stars as DreiStars,
-  Line,
-} from "@react-three/drei";
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  Suspense,
+  type RefObject,
+} from "react";
+import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
+import { OrbitControls, Html, Stars as DreiStars } from "@react-three/drei";
+import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import * as THREE from "three";
 import { placeStars, type PlacedStar } from "../data/nearbyStars";
 
@@ -221,6 +226,22 @@ function StarBody({
   );
 }
 
+function makeLinkSegments(stars: PlacedStar[], onlyId: string | null = null) {
+  const positions: number[] = [];
+  for (const s of stars) {
+    if (s.id === "sun") continue;
+    if (onlyId !== null && s.id !== onlyId) continue;
+    const [x, y, z] = s.position;
+    positions.push(0, 0, 0, x, y, z);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3),
+  );
+  return geometry;
+}
+
 function LinksToSun({
   stars,
   selectedId,
@@ -228,34 +249,103 @@ function LinksToSun({
   stars: PlacedStar[];
   selectedId: string | null;
 }) {
-  const lines = useMemo(() => {
-    return stars
-      .filter((s) => s.id !== "sun" && (selectedId === null || s.id === selectedId))
-      .map((s) => ({
-        id: s.id,
-        points: [
-          new THREE.Vector3(0, 0, 0),
-          new THREE.Vector3(...s.position),
-        ] as [THREE.Vector3, THREE.Vector3],
-        color: s.id === selectedId ? "#6ab0ff" : "#1e3a55",
-        opacity: s.id === selectedId ? 0.7 : 0.25,
-      }));
-  }, [stars, selectedId]);
+  // Native LineSegments — more reliable than drei Line2 for many thin rays.
+  const allGeom = useMemo(() => makeLinkSegments(stars), [stars]);
+  const selectedGeom = useMemo(
+    () => (selectedId ? makeLinkSegments(stars, selectedId) : null),
+    [stars, selectedId],
+  );
+
+  useEffect(() => () => allGeom.dispose(), [allGeom]);
+  useEffect(() => () => selectedGeom?.dispose(), [selectedGeom]);
 
   return (
-    <>
-      {lines.map((l) => (
-        <Line
-          key={l.id}
-          points={l.points}
-          color={l.color}
-          lineWidth={l.id === selectedId ? 1.5 : 0.6}
+    <group>
+      <lineSegments geometry={allGeom} frustumCulled={false}>
+        <lineBasicMaterial
+          color="#5a9fd4"
           transparent
-          opacity={l.opacity}
+          opacity={0.55}
+          depthWrite={false}
         />
-      ))}
-    </>
+      </lineSegments>
+
+      {selectedGeom &&
+        (selectedGeom.getAttribute("position")?.count ?? 0) > 0 && (
+          <lineSegments geometry={selectedGeom} frustumCulled={false}>
+            <lineBasicMaterial
+              color="#9ecbff"
+              transparent
+              opacity={0.95}
+              depthWrite={false}
+            />
+          </lineSegments>
+        )}
+    </group>
   );
+}
+
+/** Preferable elevated viewing direction (normalized later). */
+const VIEW_DIR = new THREE.Vector3(0.55, 0.38, 0.74).normalize();
+/** Distance multiplier on the fitted framing. 1 = tight fit; higher = farther out. */
+const FIT_FILL = 0.95;
+
+/**
+ * Frame the perspective camera so the star neighborhood fills most of the view.
+ * Re-runs when the visible set changes (e.g. radius slider).
+ * Does not lock the camera — OrbitControls stay free afterward.
+ */
+function FitCameraToStars({
+  stars,
+  maxDistance,
+  controlsRef,
+}: {
+  stars: PlacedStar[];
+  maxDistance: number;
+  controlsRef: RefObject<OrbitControlsImpl | null>;
+}) {
+  const { camera, size } = useThree();
+
+  useLayoutEffect(() => {
+    // Sun-centered radius from the farthest visible star (true neighborhood extent)
+    let radius = 0;
+    for (const s of stars) {
+      const d = Math.hypot(s.position[0], s.position[1], s.position[2]);
+      if (d > radius) radius = d;
+    }
+    // Fall back to the filter radius if catalog is empty for some reason
+    radius = Math.max(radius, maxDistance * 0.35, 2);
+    // Tiny pad for labels / glow (not full ring corners — that over-zoomed-out)
+    radius += 0.8;
+
+    const center = new THREE.Vector3(0, 0, 0);
+
+    const perspective = camera as THREE.PerspectiveCamera;
+    const vFov = THREE.MathUtils.degToRad(perspective.fov);
+    const aspect =
+      perspective.aspect || (size.width > 0 ? size.width / size.height : 1);
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+    // Fit to the tighter axis so nothing clips
+    const fov = Math.min(vFov, hFov);
+    // tan-fit fills the view better than sin-sphere; FIT_FILL zooms in a bit
+    const distance = (radius / Math.tan(fov / 2)) * FIT_FILL;
+
+    camera.position.copy(center).addScaledVector(VIEW_DIR, distance);
+    camera.near = Math.max(distance / 200, 0.05);
+    camera.far = Math.max(distance * 20, 200);
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
+
+    const controls = controlsRef.current;
+    if (controls) {
+      controls.target.copy(center);
+      controls.minDistance = Math.max(radius * 0.05, 0.5);
+      controls.maxDistance = Math.max(distance * 6, radius * 8);
+      controls.update();
+    }
+  }, [stars, maxDistance, camera, size.width, size.height, controlsRef]);
+
+  return null;
 }
 
 function SceneContent({
@@ -267,6 +357,8 @@ function SceneContent({
   selectedId,
   onSelect,
 }: StarMapProps) {
+  const controlsRef = useRef<OrbitControlsImpl>(null);
+
   const stars = useMemo(() => {
     return placeStars().filter(
       (s) => s.id === "sun" || s.distanceLy <= maxDistance,
@@ -285,8 +377,8 @@ function SceneContent({
       <ambientLight intensity={0.25} />
 
       <DreiStars
-        radius={80}
-        depth={40}
+        radius={120}
+        depth={50}
         count={4000}
         factor={2.5}
         saturation={0}
@@ -314,14 +406,22 @@ function SceneContent({
       ))}
 
       <OrbitControls
+        ref={controlsRef}
         makeDefault
         enableDamping
         dampingFactor={0.08}
-        minDistance={1.5}
-        maxDistance={55}
+        minDistance={0.8}
+        maxDistance={200}
         target={[0, 0, 0]}
         autoRotate={autoRotate}
         autoRotateSpeed={0.45}
+      />
+
+      {/* After controls so the ref is attached before the fit layout effect. */}
+      <FitCameraToStars
+        stars={stars}
+        maxDistance={maxDistance}
+        controlsRef={controlsRef}
       />
     </>
   );
@@ -331,7 +431,7 @@ export function StarMap(props: StarMapProps) {
   return (
     <div className="star-map-canvas">
       <Canvas
-        camera={{ position: [8, 6, 14], fov: 50, near: 0.1, far: 200 }}
+        camera={{ position: [0, 8, 20], fov: 50, near: 0.1, far: 500 }}
         dpr={[1, 2]}
         gl={{ antialias: true, alpha: false }}
         onPointerMissed={() => props.onSelect(null)}

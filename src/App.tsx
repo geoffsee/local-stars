@@ -194,6 +194,14 @@ export function App() {
         <span className="legend-item muted">
           Rings at 5 · 10 · 15 · 20 light-years
         </span>
+        <a
+          className="legend-link"
+          href="https://en.wikipedia.org/wiki/List_of_nearest_stars"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          List of nearest stars ↗
+        </a>
       </footer>
     </div>
   );
