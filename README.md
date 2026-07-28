@@ -13,6 +13,27 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Build
+
+```bash
+bun run build
+```
+
+Static output lands in `dist/` (relative asset paths, fine for GitHub Pages project sites).
+
+## Deploy (GitHub Pages)
+
+Pushing to `main` runs [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml), which builds with Bun and deploys `dist/` to GitHub Pages.
+
+One-time repo setup:
+
+1. **Settings → Pages → Build and deployment → Source**: **GitHub Actions**
+2. Ensure the `github-pages` environment is allowed for Actions (default on public repos)
+
+The site will be available at `https://<user>.github.io/<repo>/` after the first successful run.
+
+You can also trigger a deploy manually: **Actions → Deploy to GitHub Pages → Run workflow**.
+
 ## Features
 
 - **~45 nearby stars** within ~20 light-years (catalog in `src/data/nearbyStars.ts`)

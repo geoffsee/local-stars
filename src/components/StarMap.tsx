@@ -410,7 +410,7 @@ function SceneContent({
         makeDefault
         enableDamping
         dampingFactor={0.08}
-        minDistance={0.8}
+        minDistance={0.5}
         maxDistance={200}
         target={[0, 0, 0]}
         autoRotate={autoRotate}
